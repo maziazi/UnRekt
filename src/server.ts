@@ -7,8 +7,9 @@ import { extractExposure } from "./riskExtractor.js";
 import { SimulatedVenueAdapter } from "./venues/SimulatedVenueAdapter.js";
 import type { ExecutionVenue } from "./venues/ExecutionVenue.js";
 import { writeHedgeAttestation } from "./eas.js";
-import { requirePayment } from "./x402.js";
+import { buildPaymentChallenge, verifyPaymentTx } from "./x402.js";
 import { saveHedge, getHedge } from "./hedgeStore.js";
+import { saveDraft, getDraft, deleteDraft } from "./paymentDrafts.js";
 
 const app = express();
 app.use(express.json());
@@ -21,13 +22,52 @@ app.get("/health", (_req, res) => {
   res.json({ ok: true, venue: venue.name });
 });
 
-// F2 + F3 + F4 — terima teks bebas, ekstrak eksposur, hitung hedge 1:1
+// F2 + F3 + F4 + F5 (FR-4) — terima teks bebas, ekstrak eksposur, hitung
+// hedge 1:1, gerbang pembayaran nyata via saldo USD₮0 X Layer.
+// Alur: panggilan pertama (tanpa draftId) -> 402 + draftId. Bayar ke alamat
+// yang diberikan. Panggilan ulang (dengan draftId) -> verifikasi saldo
+// bertambah -> buka hedge.
 app.post("/hedge", async (req, res) => {
   const rawText: string | undefined = req.body?.text;
+  const draftId: string | undefined = req.body?.draftId;
+  const paymentTxHash: string | undefined = req.body?.paymentTxHash;
+
   if (!rawText || typeof rawText !== "string") {
     return res.status(400).json({ error: "field 'text' wajib diisi" });
   }
 
+  // Panggilan ulang setelah bayar
+  if (draftId) {
+    const draft = getDraft(draftId);
+    if (!draft) {
+      return res.status(404).json({
+        error: "draftId tidak ditemukan atau sudah kedaluwarsa (15 menit). Mulai ulang tanpa draftId.",
+      });
+    }
+
+    if (!paymentTxHash || typeof paymentTxHash !== "string") {
+      return res.status(402).json({
+        ...buildPaymentChallenge(),
+        draftId,
+        hint: "Sertakan 'paymentTxHash' dari transaksi pembayaran USD₮0 kamu.",
+      });
+    }
+
+    const { paid, reason } = await verifyPaymentTx(paymentTxHash);
+    if (!paid) {
+      return res.status(402).json({
+        ...buildPaymentChallenge(),
+        draftId,
+        reason,
+        hint: "Verifikasi pembayaran gagal. Tunggu beberapa detik kalau transaksi baru saja dikirim, lalu coba lagi.",
+      });
+    }
+
+    deleteDraft(draftId);
+    return openHedgeAndRespond(res, draft.rawText, draft.extracted, paymentTxHash);
+  }
+
+  // Panggilan pertama
   const extracted = extractExposure(rawText);
 
   // SRS risiko #1: jangan auto-eksekusi dari tebakan rendah confidence
@@ -39,14 +79,21 @@ app.post("/hedge", async (req, res) => {
     });
   }
 
-  // F5 / FR-4 — pembayaran x402 (masih stub, lihat src/x402.ts)
-  const payment = await requirePayment();
-  if (!payment.paid) {
-    return res.status(402).json({
-      error: "Payment required (x402) — belum diimplementasikan, lihat src/x402.ts",
-    });
-  }
+  const newDraftId = randomUUID();
+  saveDraft({ id: newDraftId, rawText, extracted, createdAt: Date.now() });
 
+  return res.status(402).json({
+    ...buildPaymentChallenge(),
+    draftId: newDraftId,
+  });
+});
+
+async function openHedgeAndRespond(
+  res: import("express").Response,
+  rawText: string,
+  extracted: ReturnType<typeof extractExposure>,
+  paymentTxHash: string
+) {
   const hedge: HedgeRequest = {
     id: randomUUID(),
     rawText,
@@ -56,7 +103,7 @@ app.post("/hedge", async (req, res) => {
     hedgeSize: extracted.exposureValue,
     venue: venue.name,
     status: "pending_payment",
-    paymentTxRef: payment.paymentTxRef,
+    paymentTxRef: paymentTxHash,
     attestationUid: null,
     createdAt: new Date().toISOString(),
     closedAt: null,
@@ -77,7 +124,7 @@ app.post("/hedge", async (req, res) => {
 
   saveHedge(hedge);
   res.status(201).json({ hedge, venueRef: opened.venueRef, attestation });
-});
+}
 
 // F7 — status posisi
 app.get("/hedge/:id", (req, res) => {
