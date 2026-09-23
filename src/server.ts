@@ -1,5 +1,7 @@
 import express from "express";
 import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import "dotenv/config";
 
 import type { HedgeRequest } from "./types.js";
@@ -11,11 +13,14 @@ import { buildPaymentChallenge, verifyPaymentTx } from "./x402.js";
 import { saveHedge, getHedge } from "./hedgeStore.js";
 import { saveDraft, getDraft, deleteDraft } from "./paymentDrafts.js";
 
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
 const app = express();
 app.use(express.json());
+app.use(express.static(join(__dirname, "..", "public")));
 
-// Hari 2 malam: kalau RWAperpAdapter sudah terverifikasi, ganti baris ini.
-// Sampai saat itu, HANYA SimulatedVenueAdapter yang boleh dipakai (PRD §4/§9).
+// RWAperp dicoret resmi (23 Sep 2026) — domainnya parked, bukan produk aktif.
+// SimulatedVenueAdapter adalah venue final, bukan fallback sementara.
 const venue: ExecutionVenue = new SimulatedVenueAdapter();
 
 app.get("/health", (_req, res) => {

@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>UNREKT</title>
+<style>
+  :root {
+    color-scheme: light;
+    --surface: #fcfcfb; --page: #f9f9f7;
+    --ink: #0b0b0b; --ink-2: #52514e;
+    --rule: #e1e0d9;
+    --good: #0ca30c; --warn: #c98a00; --bad: #d03b3b;
+    --live: #0ca30c; --sim: #8a6d00;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --surface: #1a1a19; --page: #0d0d0d;
+      --ink: #ffffff; --ink-2: #c3c2b7;
+      --rule: #2c2c2a;
+      --good: #1fd11f; --warn: #e0b400; --bad: #ef5555;
+      --live: #1fd11f; --sim: #e0b400;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px 16px;
+    background: var(--page); color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex; justify-content: center;
+  }
+  main { width: 100%; max-width: 640px; }
+  h1 { font-size: 20px; font-weight: 600; margin: 0 0 4px; }
+  .tagline { color: var(--ink-2); font-size: 13px; margin: 0 0 20px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--rule);
+    border-radius: 10px; padding: 16px; margin-bottom: 16px;
+  }
+  textarea {
+    width: 100%; min-height: 72px; padding: 10px; border-radius: 8px;
+    border: 1px solid var(--rule); background: var(--page); color: var(--ink);
+    font-family: "SF Mono", ui-monospace, monospace; font-size: 14px; resize: vertical;
+  }
+  button {
+    margin-top: 10px; padding: 8px 16px; border-radius: 6px; border: none;
+    background: var(--ink); color: var(--surface); font-size: 14px; font-weight: 500;
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.5; cursor: default; }
+  button.secondary { background: transparent; color: var(--ink); border: 1px solid var(--rule); }
+  .badge {
+    display: inline-block; font-size: 12px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.04em; padding: 2px 8px; border-radius: 6px;
+  }
+  .badge.sim { color: var(--sim); border: 1px dashed var(--sim); }
+  .badge.live { color: var(--live); background: color-mix(in srgb, var(--live) 15%, transparent); }
+  .before-after { display: flex; gap: 24px; margin: 12px 0; }
+  .before-after div { flex: 1; }
+  .label { font-size: 12px; color: var(--ink-2); margin-bottom: 4px; }
+  .amount { font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .proof-line { font-size: 13px; margin: 6px 0; word-break: break-all; }
+  .proof-line a { color: var(--ink); }
+  .disclaimer { font-size: 12px; color: var(--ink-2); margin-top: 16px; }
+  .error { color: var(--bad); font-size: 13px; margin-top: 8px; }
+  .hint { font-size: 12px; color: var(--ink-2); margin-top: 6px; }
+  code { font-size: 12px; background: var(--page); padding: 2px 4px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>UNREKT</h1>
+  <p class="tagline">Hedge before you're rekt.</p>
+
+  <div class="card">
+    <div class="label">Describe what you're worried about</div>
+    <textarea id="riskText" placeholder="I have $5000 in tokenized AAPL, worried it drops next week">I have $5000 in tokenized AAPL, worried it drops next week</textarea>
+    <button id="submitBtn">Open hedge</button>
+    <div id="hintArea"></div>
+  </div>
+
+  <div id="paymentCard" class="card" style="display:none">
+    <div class="label">Payment required</div>
+    <div id="paymentDetails"></div>
+    <div class="label" style="margin-top:12px">Payment transaction hash</div>
+    <textarea id="txHashInput" style="min-height:36px" placeholder="0x..."></textarea>
+    <button id="confirmBtn">Confirm payment</button>
+  </div>
+
+  <div id="resultCard" class="card" style="display:none"></div>
+
+  <p class="disclaimer">Educational/demo simulation for a hackathon — not financial advice. Hedge size is computed automatically using a simple 1:1 assumption.</p>
+</main>
+
+<script>
+  let draftId = null;
+  let lastText = "";
+
+  const riskText = document.getElementById("riskText");
+  const submitBtn = document.getElementById("submitBtn");
+  const hintArea = document.getElementById("hintArea");
+  const paymentCard = document.getElementById("paymentCard");
+  const paymentDetails = document.getElementById("paymentDetails");
+  const txHashInput = document.getElementById("txHashInput");
+  const confirmBtn = document.getElementById("confirmBtn");
+  const resultCard = document.getElementById("resultCard");
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+
+  async function callHedge(body) {
+    const res = await fetch("/hedge", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    return { status: res.status, data };
+  }
+
+  submitBtn.addEventListener("click", async () => {
+    hintArea.innerHTML = "";
+    paymentCard.style.display = "none";
+    resultCard.style.display = "none";
+    lastText = riskText.value.trim();
+    if (!lastText) return;
+
+    submitBtn.disabled = true;
+    const { status, data } = await callHedge({ text: lastText });
+    submitBtn.disabled = false;
+
+    if (status === 422) {
+      hintArea.innerHTML = `<div class="error">${escapeHtml(data.error)}</div><div class="hint">${escapeHtml(data.hint)}</div>`;
+      return;
+    }
+    if (status === 402) {
+      draftId = data.draftId;
+      paymentDetails.innerHTML = `
+        <div class="proof-line">Chain: <code>${escapeHtml(data.pay.chain)}</code></div>
+        <div class="proof-line">Asset: <code>${escapeHtml(data.pay.asset)}</code> (<code>${escapeHtml(data.pay.assetAddress)}</code>)</div>
+        <div class="proof-line">Pay to: <code>${escapeHtml(data.pay.payTo)}</code></div>
+        <div class="proof-line">Amount: <code>${escapeHtml(data.pay.amount)}</code></div>
+      `;
+      paymentCard.style.display = "block";
+      return;
+    }
+    hintArea.innerHTML = `<div class="error">Unexpected response (${status})</div>`;
+  });
+
+  confirmBtn.addEventListener("click", async () => {
+    const paymentTxHash = txHashInput.value.trim();
+    if (!paymentTxHash || !draftId) return;
+
+    confirmBtn.disabled = true;
+    const { status, data } = await callHedge({ text: lastText, draftId, paymentTxHash });
+    confirmBtn.disabled = false;
+
+    if (status === 402) {
+      hintArea.innerHTML = `<div class="error">${escapeHtml(data.reason || data.error)}</div><div class="hint">${escapeHtml(data.hint || "")}</div>`;
+      return;
+    }
+    if (status !== 201) {
+      hintArea.innerHTML = `<div class="error">Unexpected response (${status})</div>`;
+      return;
+    }
+
+    paymentCard.style.display = "none";
+    const h = data.hedge;
+    const venueBadge = h.venue === "simulated"
+      ? '<span class="badge sim">SIMULATED</span>'
+      : '<span class="badge live">LIVE</span>';
+
+    resultCard.innerHTML = `
+      <div class="before-after">
+        <div>
+          <div class="label">Before — open exposure</div>
+          <div class="amount">$${Number(h.exposureValue).toLocaleString()}</div>
+        </div>
+        <div>
+          <div class="label">After — hedged exposure</div>
+          <div class="amount">$0 <span style="font-size:13px;color:var(--ink-2)">(1:1 hedge)</span></div>
+        </div>
+      </div>
+      <div>${venueBadge} · asset <code>${escapeHtml(h.asset)}</code></div>
+      <div class="proof-line" style="margin-top:12px">Payment tx (x402): <code>${escapeHtml(h.paymentTxRef)}</code></div>
+      <div class="proof-line">EAS attestation tx: <code>${escapeHtml(data.attestation?.attestationUid || "n/a")}</code></div>
+    `;
+    resultCard.style.display = "block";
+  });
+</script>
+</body>
+</html>
