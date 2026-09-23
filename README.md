@@ -14,11 +14,13 @@ The most important section in this README — read before trusting any claim mad
 |---|---|
 | `/hedge`, `/hedge/:id` endpoints, text extraction, 1:1 sizing | ✅ Working, real code |
 | Execution venue | ⚠️ **`SimulatedVenueAdapter`** — deterministic, not real trading. `RWAperpAdapter` exists in the codebase but is **intentionally not wired up** until its API is verified reachable (see `src/venues/RWAperpAdapter.ts`) |
-| x402 payment | ❌ **Stub** (`src/x402.ts`) — no real payment has occurred yet. Highest priority to implement |
+| x402 payment | ✅ **Real, verified on-chain** (`src/x402.ts`) — simplified payment gate: `/hedge` returns 402 + a `draftId`, caller pays real USD₮0 on X Layer, replays with `{ draftId, paymentTxHash }`. The server verifies the exact transaction (status, recipient, amount) via the `onchainos` CLI and rejects tx-hash reuse. **Not** full signature-based x402 (see note below) |
 | EAS attestation | ❌ **Stub** (`src/eas.ts`) — contract address is correct (X Layer predeploy), but not yet wired to a real Agentic Wallet signer |
-| Agentic Wallet | ✅ Logged in (Google, X Layer EVM address active) — signer wiring into `eas.ts` / `x402.ts` still pending |
+| Agentic Wallet | ✅ Logged in (Google, X Layer EVM address active), funded with real USD₮0 (bridged from BNB Chain) — signer wiring into `eas.ts` still pending |
 | Risk extraction from text (F3) | ⚠️ Simple regex heuristic (`src/riskExtractor.ts`), **not** a real LLM call yet — placeholder until wired to an API key |
 | Morningstar, MoonPay, Liminal, Centrifuge, xStocks data | ❌ Not integrated — mentioned only in the product-vision narrative |
+
+**Why the x402 gate is simplified, not spec-pure:** a full `exact`-scheme x402 challenge needs a correct EIP-712 domain for the payment asset and either a facilitator or a relay step to actually settle a signed authorization on-chain. No OKX documentation for the merchant/seller side of that was available, and guessing the domain risks producing signatures that look valid but fail real settlement. This implementation asks for a real transfer and verifies the exact transaction on-chain instead of trusting a signature payload — less protocol-pure, but every payment is real and checkable on the X Layer explorer.
 
 ## Running it
 
@@ -30,13 +32,17 @@ npm run dev
 Server runs at `http://localhost:3000`.
 
 ```bash
-# Example with high-enough confidence (known asset + amount present)
+# 1. First call returns 402 + a draftId
 curl -X POST localhost:3000/hedge \
   -H "Content-Type: application/json" \
   -d '{"text": "I have $5000 in tokenized AAPL, worried it drops next week"}'
-```
 
-Right now this stops at `402 Payment Required` (honestly — `src/x402.ts` is still a stub) until real x402 payment is wired in.
+# 2. Pay the quoted amount of USD₮0 on X Layer to the given payTo address,
+#    then replay with the draftId and the resulting transaction hash:
+curl -X POST localhost:3000/hedge \
+  -H "Content-Type: application/json" \
+  -d '{"text": "I have $5000 in tokenized AAPL, worried it drops next week", "draftId": "<from step 1>", "paymentTxHash": "<your payment tx hash>"}'
+```
 
 ## Disclaimer
 
