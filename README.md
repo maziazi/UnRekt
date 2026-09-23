@@ -15,8 +15,8 @@ The most important section in this README — read before trusting any claim mad
 | `/hedge`, `/hedge/:id` endpoints, text extraction, 1:1 sizing | ✅ Working, real code |
 | Execution venue | ⚠️ **`SimulatedVenueAdapter`** — deterministic, not real trading. `RWAperpAdapter` exists in the codebase but is **intentionally not wired up** until its API is verified reachable (see `src/venues/RWAperpAdapter.ts`) |
 | x402 payment | ✅ **Real, verified on-chain** (`src/x402.ts`) — simplified payment gate: `/hedge` returns 402 + a `draftId`, caller pays real USD₮0 on X Layer, replays with `{ draftId, paymentTxHash }`. The server verifies the exact transaction (status, recipient, amount) via the `onchainos` CLI and rejects tx-hash reuse. **Not** full signature-based x402 (see note below) |
-| EAS attestation | ❌ **Stub** (`src/eas.ts`) — contract address is correct (X Layer predeploy), but not yet wired to a real Agentic Wallet signer |
-| Agentic Wallet | ✅ Logged in (Google, X Layer EVM address active), funded with real USD₮0 (bridged from BNB Chain) — signer wiring into `eas.ts` still pending |
+| EAS attestation | ✅ **Real, verified on-chain** (`src/eas.ts`) — every opened hedge writes a real attestation to X Layer's EAS predeploy (`0x4200...0021`) using a schema registered once via `src/scripts/registerSchema.ts`. Independent of RWAperp or any third party |
+| Agentic Wallet | ✅ Logged in (Google, X Layer EVM address active), funded with real USD₮0 (bridged from BNB Chain) |
 | Risk extraction from text (F3) | ⚠️ Simple regex heuristic (`src/riskExtractor.ts`), **not** a real LLM call yet — placeholder until wired to an API key |
 | Morningstar, MoonPay, Liminal, Centrifuge, xStocks data | ❌ Not integrated — mentioned only in the product-vision narrative |
 
