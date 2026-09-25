@@ -182,12 +182,37 @@
           <div class="amount">$0 <span style="font-size:13px;color:var(--ink-2)">(1:1 hedge)</span></div>
         </div>
       </div>
-      <div>${venueBadge} · asset <code>${escapeHtml(h.asset)}</code></div>
+      <div>${venueBadge} · asset <code>${escapeHtml(h.asset)}</code>${h.openPrice ? ` · opened at <code>$${Number(h.openPrice).toFixed(2)}</code> (real xStock price)` : ""}</div>
       <div class="proof-line" style="margin-top:12px">Payment tx (x402): <code>${escapeHtml(h.paymentTxRef)}</code></div>
       <div class="proof-line">EAS attestation tx: <code>${escapeHtml(data.attestation?.attestationUid || "n/a")}</code></div>
+      <div id="pnlArea" style="margin-top:12px"></div>
+      <button id="refreshPnlBtn" class="secondary">Refresh live P&amp;L</button>
     `;
     resultCard.style.display = "block";
+    currentHedgeId = h.id;
+    document.getElementById("refreshPnlBtn").addEventListener("click", refreshPnl);
+    if (h.ticker) refreshPnl();
   });
+
+  let currentHedgeId = null;
+
+  async function refreshPnl() {
+    if (!currentHedgeId) return;
+    const res = await fetch(`/hedge/${currentHedgeId}`);
+    const data = await res.json();
+    const pnlArea = document.getElementById("pnlArea");
+    if (!pnlArea) return;
+    if (!data.pnl) {
+      pnlArea.innerHTML = `<div class="hint">No live price feed for this asset.</div>`;
+      return;
+    }
+    const pct = (data.pnl.priceChangePercent * 100).toFixed(3);
+    const pnlColor = data.pnl.hedgePnl >= 0 ? "var(--good)" : "var(--bad)";
+    pnlArea.innerHTML = `
+      <div class="proof-line">Current price (real xStock): <code>$${data.pnl.currentPrice.toFixed(2)}</code> (${pct}% since open)</div>
+      <div class="proof-line">Hedge P&amp;L (offsetting your exposure): <span style="color:${pnlColor};font-weight:600">$${data.pnl.hedgePnl.toFixed(2)}</span></div>
+    `;
+  }
 </script>
 </body>
 </html>

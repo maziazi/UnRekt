@@ -12,6 +12,8 @@ import { writeHedgeAttestation } from "./eas.js";
 import { buildPaymentChallenge, verifyPaymentTx } from "./x402.js";
 import { saveHedge, getHedge } from "./hedgeStore.js";
 import { saveDraft, getDraft, deleteDraft } from "./paymentDrafts.js";
+import { requireAdminSecret, walletLoginInit, walletLoginPoll, walletStatus } from "./admin.js";
+import { getXStockPrice } from "./xstockPrices.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -26,6 +28,11 @@ const venue: ExecutionVenue = new SimulatedVenueAdapter();
 app.get("/health", (_req, res) => {
   res.json({ ok: true, venue: venue.name });
 });
+
+// Bootstrap-only routes — see src/admin.ts. Guarded by ADMIN_SECRET.
+app.post("/admin/wallet-login/init", requireAdminSecret, walletLoginInit);
+app.get("/admin/wallet-login/poll", requireAdminSecret, walletLoginPoll);
+app.get("/admin/wallet-status", requireAdminSecret, walletStatus);
 
 // F2 + F3 + F4 + F5 (FR-4) — terima teks bebas, ekstrak eksposur, hitung
 // hedge 1:1, gerbang pembayaran nyata via saldo USD₮0 X Layer.
@@ -99,10 +106,16 @@ async function openHedgeAndRespond(
   extracted: ReturnType<typeof extractExposure>,
   paymentTxHash: string
 ) {
+  // Product completeness fix (25 Sep): tangkap harga xStock NYATA saat
+  // hedge dibuka — venue-nya tetap simulasi, tapi pergerakan harga yang
+  // dipakai buat P&L adalah harga pasar sungguhan, bukan angka karangan.
+  const openPrice = extracted.ticker ? await getXStockPrice(extracted.ticker) : null;
+
   const hedge: HedgeRequest = {
     id: randomUUID(),
     rawText,
     asset: extracted.asset,
+    ticker: extracted.ticker,
     exposureValue: extracted.exposureValue,
     hedgeRatio: 1,
     hedgeSize: extracted.exposureValue,
@@ -110,6 +123,7 @@ async function openHedgeAndRespond(
     status: "pending_payment",
     paymentTxRef: paymentTxHash,
     attestationUid: null,
+    openPrice,
     createdAt: new Date().toISOString(),
     closedAt: null,
   };
@@ -131,11 +145,24 @@ async function openHedgeAndRespond(
   res.status(201).json({ hedge, venueRef: opened.venueRef, attestation });
 }
 
-// F7 — status posisi
-app.get("/hedge/:id", (req, res) => {
+// F7 — status posisi, termasuk P&L hedge berbasis harga xStock NYATA
+app.get("/hedge/:id", async (req, res) => {
   const hedge = getHedge(req.params.id);
   if (!hedge) return res.status(404).json({ error: "hedge tidak ditemukan" });
-  res.json({ hedge });
+
+  let pnl: { currentPrice: number; priceChangePercent: number; hedgePnl: number } | null = null;
+  if (hedge.ticker && hedge.openPrice) {
+    const currentPrice = await getXStockPrice(hedge.ticker);
+    if (currentPrice) {
+      const priceChangePercent = (currentPrice - hedge.openPrice) / hedge.openPrice;
+      // Posisi hedge = short 1:1 -> untung kalau harga TURUN, rugi kalau NAIK,
+      // menutupi kerugian/keuntungan di aset asli yang dilindungi.
+      const hedgePnl = -(hedge.hedgeSize * priceChangePercent);
+      pnl = { currentPrice, priceChangePercent, hedgePnl };
+    }
+  }
+
+  res.json({ hedge, pnl });
 });
 
 // F6 (tutup manual) — auto-close berbasis waktu (F11) dicoret di aturan potong

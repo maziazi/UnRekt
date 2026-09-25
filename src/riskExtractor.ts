@@ -1,4 +1,5 @@
 import type { ExtractedExposure } from "./types.js";
+import { KNOWN_TICKERS } from "./xstockPrices.js";
 
 /**
  * PLACEHOLDER heuristik — bukan implementasi final F3.
@@ -13,11 +14,10 @@ export function extractExposure(rawText: string): ExtractedExposure {
   const amountMatch = rawText.match(/\$?\s?([\d,]+(?:\.\d+)?)\s?(?:usd|dollar)?/i);
   const exposureValue = amountMatch ? Number(amountMatch[1].replace(/,/g, "")) : 0;
 
-  const knownAssets = ["AAPL", "TSLA", "MSFT", "GOOG", "AMZN", "NVDA"];
-  const found = knownAssets.find((a) => new RegExp(a, "i").test(rawText));
+  const found = KNOWN_TICKERS.find((a) => new RegExp(a, "i").test(rawText));
   const asset = found ? `${found}-tokenized` : "UNKNOWN";
 
   const confidence = exposureValue > 0 && asset !== "UNKNOWN" ? 0.8 : 0.2;
 
-  return { asset, exposureValue, confidence };
+  return { asset, ticker: found ?? null, exposureValue, confidence };
 }
