@@ -9,9 +9,8 @@ import { extractExposureLLM } from "./llmExtractor.js";
 import { SimulatedVenueAdapter } from "./venues/SimulatedVenueAdapter.js";
 import type { ExecutionVenue } from "./venues/ExecutionVenue.js";
 import { writeHedgeAttestation } from "./eas.js";
-import { buildPaymentChallenge, verifyPaymentTx } from "./x402.js";
+import { hedgePaymentMiddleware } from "./x402Sdk.js";
 import { saveHedge, getHedge } from "./hedgeStore.js";
-import { saveDraft, getDraft, deleteDraft } from "./paymentDrafts.js";
 import { requireAdminSecret, walletLoginInit, walletLoginPoll, walletStatus } from "./admin.js";
 import { getXStockPrice } from "./xstockPrices.js";
 
@@ -35,54 +34,24 @@ app.get("/admin/wallet-login/poll", requireAdminSecret, walletLoginPoll);
 app.get("/admin/wallet-status", requireAdminSecret, walletStatus);
 
 // F2 + F3 + F4 + F5 (FR-4) — terima teks bebas, ekstrak eksposur, hitung
-// hedge 1:1, gerbang pembayaran nyata via saldo USD₮0 X Layer.
-// Alur: panggilan pertama (tanpa draftId) -> 402 + draftId. Bayar ke alamat
-// yang diberikan. Panggilan ulang (dengan draftId) -> verifikasi saldo
-// bertambah -> buka hedge.
-app.post("/hedge", async (req, res) => {
+// hedge 1:1. Pembayaran (x402) sekarang digerbangi oleh SDK resmi Onchain OS
+// Payment — hedgePaymentMiddleware menolak request dengan 402 dan urus
+// verifikasi+settlement ke OKX Facilitator sebelum handler ini dipanggil
+// sama sekali. Tidak ada lagi draft/replay manual.
+app.post("/hedge", hedgePaymentMiddleware, async (req, res) => {
   const rawText: string | undefined = req.body?.text;
-  const draftId: string | undefined = req.body?.draftId;
-  const paymentTxHash: string | undefined = req.body?.paymentTxHash;
 
   if (!rawText || typeof rawText !== "string") {
     return res.status(400).json({ error: "field 'text' wajib diisi" });
   }
 
-  // Panggilan ulang setelah bayar
-  if (draftId) {
-    const draft = getDraft(draftId);
-    if (!draft) {
-      return res.status(404).json({
-        error: "draftId tidak ditemukan atau sudah kedaluwarsa (15 menit). Mulai ulang tanpa draftId.",
-      });
-    }
-
-    if (!paymentTxHash || typeof paymentTxHash !== "string") {
-      return res.status(402).json({
-        ...buildPaymentChallenge(),
-        draftId,
-        hint: "Sertakan 'paymentTxHash' dari transaksi pembayaran USD₮0 kamu.",
-      });
-    }
-
-    const { paid, reason } = await verifyPaymentTx(paymentTxHash);
-    if (!paid) {
-      return res.status(402).json({
-        ...buildPaymentChallenge(),
-        draftId,
-        reason,
-        hint: "Verifikasi pembayaran gagal. Tunggu beberapa detik kalau transaksi baru saja dikirim, lalu coba lagi.",
-      });
-    }
-
-    deleteDraft(draftId);
-    return openHedgeAndRespond(res, draft.rawText, draft.extracted, paymentTxHash);
-  }
-
-  // Panggilan pertama
   const extracted = await extractExposureLLM(rawText);
 
-  // SRS risiko #1: jangan auto-eksekusi dari tebakan rendah confidence
+  // SRS risiko #1: jangan auto-eksekusi dari tebakan rendah confidence.
+  // Catatan: pembayaran sudah terjadi (middleware sudah lolos) saat titik
+  // ini — kalau ekstraksinya tidak jelas, hedge tetap tidak dibuka, tapi
+  // biaya pembukaan yang sudah dibayar tidak dikembalikan otomatis (lihat
+  // README bagian keterbatasan MVP).
   if (extracted.confidence < 0.5) {
     return res.status(422).json({
       error: "Tidak yakin dengan ekstraksi aset/nilai eksposur dari teks ini.",
@@ -91,21 +60,6 @@ app.post("/hedge", async (req, res) => {
     });
   }
 
-  const newDraftId = randomUUID();
-  saveDraft({ id: newDraftId, rawText, extracted, createdAt: Date.now() });
-
-  return res.status(402).json({
-    ...buildPaymentChallenge(),
-    draftId: newDraftId,
-  });
-});
-
-async function openHedgeAndRespond(
-  res: import("express").Response,
-  rawText: string,
-  extracted: Awaited<ReturnType<typeof extractExposureLLM>>,
-  paymentTxHash: string
-) {
   // Product completeness fix (25 Sep): tangkap harga xStock NYATA saat
   // hedge dibuka — venue-nya tetap simulasi, tapi pergerakan harga yang
   // dipakai buat P&L adalah harga pasar sungguhan, bukan angka karangan.
@@ -121,7 +75,7 @@ async function openHedgeAndRespond(
     hedgeSize: extracted.exposureValue,
     venue: venue.name,
     status: "pending_payment",
-    paymentTxRef: paymentTxHash,
+    paymentTxRef: "verified-by-okx-x402-facilitator", // lihat PAYMENT-RESPONSE header di response ini
     attestationUid: null,
     openPrice,
     createdAt: new Date().toISOString(),
@@ -137,13 +91,13 @@ async function openHedgeAndRespond(
 
   hedge.status = "open";
 
-  // F15 — attestation EAS (masih stub, lihat src/eas.ts)
+  // F15 — attestation EAS
   const attestation = await writeHedgeAttestation(hedge);
   hedge.attestationUid = attestation.attestationUid;
 
   saveHedge(hedge);
   res.status(201).json({ hedge, venueRef: opened.venueRef, attestation });
-}
+});
 
 // F7 — status posisi, termasuk P&L hedge berbasis harga xStock NYATA
 app.get("/hedge/:id", async (req, res) => {

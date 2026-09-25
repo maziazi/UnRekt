@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { Interface, ZeroHash } from "ethers";
 import type { HedgeRequest } from "./types.js";
-import { PAY_TO_ADDRESS } from "./x402.js";
+import { PAY_TO_ADDRESS } from "./x402Sdk.js";
 
 const execFileAsync = promisify(execFile);
 
