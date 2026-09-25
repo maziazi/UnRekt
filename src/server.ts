@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import "dotenv/config";
 
 import type { HedgeRequest } from "./types.js";
-import { extractExposure } from "./riskExtractor.js";
+import { extractExposureLLM } from "./llmExtractor.js";
 import { SimulatedVenueAdapter } from "./venues/SimulatedVenueAdapter.js";
 import type { ExecutionVenue } from "./venues/ExecutionVenue.js";
 import { writeHedgeAttestation } from "./eas.js";
@@ -80,7 +80,7 @@ app.post("/hedge", async (req, res) => {
   }
 
   // Panggilan pertama
-  const extracted = extractExposure(rawText);
+  const extracted = await extractExposureLLM(rawText);
 
   // SRS risiko #1: jangan auto-eksekusi dari tebakan rendah confidence
   if (extracted.confidence < 0.5) {
@@ -103,7 +103,7 @@ app.post("/hedge", async (req, res) => {
 async function openHedgeAndRespond(
   res: import("express").Response,
   rawText: string,
-  extracted: ReturnType<typeof extractExposure>,
+  extracted: Awaited<ReturnType<typeof extractExposureLLM>>,
   paymentTxHash: string
 ) {
   // Product completeness fix (25 Sep): tangkap harga xStock NYATA saat
